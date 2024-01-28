@@ -61,7 +61,7 @@ class A2C:
     def compute_value_loss(self, bs, blogp_a, br, bd, bns):
         # 目标价值。计算优势函数的v和t_v
         with torch.no_grad():
-            target_value = br + self.args.discount * torch.logical_not(bd) * self.V_target(bns.unsqueeze(-1)).squeeze()
+            target_value = br + self.args.discount  * self.V_target(bns.unsqueeze(-1)).squeeze()
 
         # 计算value loss。
         value_loss = F.mse_loss(self.V(bs.unsqueeze(-1)).squeeze(), target_value)
@@ -70,7 +70,7 @@ class A2C:
     def compute_policy_loss(self, bs, blogp_a, br, bd, bns):
         # 目标价值。
         with torch.no_grad():
-            target_value = br + self.args.discount * torch.logical_not(bd) * self.V_target(bns.unsqueeze(-1)).squeeze()
+            target_value = br + self.args.discount  * self.V_target(bns.unsqueeze(-1)).squeeze()
 
         # 计算policy loss。
         with torch.no_grad():
@@ -151,10 +151,15 @@ def train(args, env, agent: A2C):
     rollout = Rollout()
     state= env.reset()
     for step in range(args.max_steps):
-        env.render()
+        #env.render()
         action, logp_action = agent.get_action(torch.tensor([state]).float())
         next_state, reward, terminated, _ = env.step(action.item())
         done = terminated
+        if not done:
+            reward=reward-1
+        if  done and reward>0:
+            reward=reward+5
+        
         info.put(done, reward)
 
         rollout.put(
@@ -223,6 +228,7 @@ def eval(args, env, agent):
     episode_reward = 0
     state = env.reset()
     for i in range(5000):
+        env.render()
         episode_length += 1
         action, _ = agent.get_action(torch.tensor([state]).float())
         next_state, reward, terminated, info = env.step(action.item())
@@ -251,8 +257,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=32, type=int, help="Batch size.")
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
 
-    parser.add_argument("--do_train", default=True,action="store_true", help="Train policy.")
-    parser.add_argument("--do_eval", action="store_true", help="Evaluate policy.")
+    parser.add_argument("--do_train",action="store_true", help="Train policy.")
+    parser.add_argument("--do_eval", default=True, action="store_true", help="Evaluate policy.")
     args = parser.parse_args()
 
     env = gym.make(args.env)
