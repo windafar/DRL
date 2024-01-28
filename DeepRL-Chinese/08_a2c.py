@@ -58,6 +58,8 @@ class A2C:
     def compute_value_loss(self, bs, blogp_a, br, bd, bns):
         # 目标价值。
         with torch.no_grad():
+            #* torch.logical_not(bd)是为了计算存活的奖励，因为r全是1，它实质上对算法进步没有贡献的
+            #我觉得应该也可以通过对done=true的r赋予一个较大值来处理。
             target_value = br + self.args.discount * torch.logical_not(bd) * self.V_target(bns).squeeze()
 
         # 计算value loss。
@@ -79,6 +81,7 @@ class A2C:
         return policy_loss
 
     def soft_update(self, tau=0.01):
+        #更新率只有0.01?
         def soft_update_(target, source, tau_=0.01):
             for target_param, param in zip(target.parameters(), source.parameters()):
                 target_param.data.copy_(target_param.data * (1.0 - tau_) + param.data * tau_)
@@ -144,11 +147,11 @@ def train(args, env, agent: A2C):
     info = INFO()
 
     rollout = Rollout()
-    state, _ = env.reset()
+    state = env.reset()
     for step in range(args.max_steps):
         action, logp_action = agent.get_action(torch.tensor(state).float())
-        next_state, reward, terminated, truncated, _ = env.step(action.item())
-        done = terminated or truncated
+        next_state, reward, terminated, _ = env.step(action.item())
+        done = terminated
         info.put(done, reward)
 
         rollout.put(
@@ -156,7 +159,7 @@ def train(args, env, agent: A2C):
             action,
             logp_action,
             reward,
-            done,
+            done,#done取反可以用来衡量采取每一步得到的存活奖励
             next_state,
         )
         state = next_state
@@ -187,7 +190,7 @@ def train(args, env, agent: A2C):
             print(f"step={step}, reward={episode_reward:.0f}, length={episode_length}, max_reward={info.max_episode_reward}, value_loss={value_loss:.1e}")
 
             # 重置环境。
-            state, _ = env.reset()
+            state= env.reset()
             rollout = Rollout()
 
             # 保存模型。
@@ -243,7 +246,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=32, type=int, help="Batch size.")
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
 
-    parser.add_argument("--do_train", action="store_true", help="Train policy.")
+    parser.add_argument("--do_train",default=True, action="store_true", help="Train policy.")
     parser.add_argument("--do_eval", action="store_true", help="Evaluate policy.")
     args = parser.parse_args()
 
