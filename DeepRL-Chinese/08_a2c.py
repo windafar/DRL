@@ -12,11 +12,11 @@ from torch.distributions import Categorical
 
 
 class ValueNet(nn.Module):
-    def __init__(self, dim_state):
+    def __init__(self, dim_state,dim_hiden=512):
         super().__init__()
-        self.fc1 = nn.Linear(dim_state, 64)
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, 1)
+        self.fc1 = nn.Linear(dim_state, dim_hiden)
+        self.fc2 = nn.Linear(dim_hiden, int(dim_hiden/2))
+        self.fc3 = nn.Linear(int(dim_hiden/2), 1)
 
     def forward(self, state):
         x = F.relu(self.fc1(state))
@@ -26,11 +26,11 @@ class ValueNet(nn.Module):
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, dim_state, num_action):
+    def __init__(self, dim_state, num_action,dim_hiden=512):
         super().__init__()
-        self.fc1 = nn.Linear(dim_state, 64)
-        self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, num_action)
+        self.fc1 = nn.Linear(dim_state, dim_hiden)
+        self.fc2 = nn.Linear(dim_hiden, int(dim_hiden/2))
+        self.fc3 = nn.Linear(int(dim_hiden/2), num_action)
 
     def forward(self, state):
         x = F.relu(self.fc1(state))
@@ -49,6 +49,9 @@ class A2C:
         self.V_target.load_state_dict(self.V.state_dict())
 
     def get_action(self, state):
+        '''
+        模拟一个行为
+        '''
         probs = self.pi(state)
         m = Categorical(probs)
         action = m.sample()
@@ -56,22 +59,22 @@ class A2C:
         return action, logp_action
 
     def compute_value_loss(self, bs, blogp_a, br, bd, bns):
-        # 目标价值。
+        # 目标价值。计算优势函数的v和t_v
         with torch.no_grad():
-            target_value = br + self.args.discount * torch.logical_not(bd) * self.V_target(bns).squeeze()
+            target_value = br + self.args.discount * torch.logical_not(bd) * self.V_target(bns.unsqueeze(-1)).squeeze()
 
         # 计算value loss。
-        value_loss = F.mse_loss(self.V(bs).squeeze(), target_value)
+        value_loss = F.mse_loss(self.V(bs.unsqueeze(-1)).squeeze(), target_value)
         return value_loss
 
     def compute_policy_loss(self, bs, blogp_a, br, bd, bns):
         # 目标价值。
         with torch.no_grad():
-            target_value = br + self.args.discount * torch.logical_not(bd) * self.V_target(bns).squeeze()
+            target_value = br + self.args.discount * torch.logical_not(bd) * self.V_target(bns.unsqueeze(-1)).squeeze()
 
         # 计算policy loss。
         with torch.no_grad():
-            advantage = target_value - self.V(bs).squeeze()
+            advantage = target_value - self.V(bs.unsqueeze(-1)).squeeze()
         policy_loss = 0
         for i, logp_a in enumerate(blogp_a):
             policy_loss += -logp_a * advantage[i]
@@ -85,8 +88,8 @@ class A2C:
 
         soft_update_(self.V_target, self.V, tau)
 
-
 class Rollout:
+    '''用于处理一个存于队列的episode'''
     def __init__(self):
         self.state_lst = []
         self.action_lst = []
@@ -96,6 +99,7 @@ class Rollout:
         self.next_state_lst = []
 
     def put(self, state, action, logp_action, reward, done, next_state):
+        '''放入s,a,log_a,r,done,next_s'''
         self.state_lst.append(state)
         self.action_lst.append(action)
         self.logp_action_lst.append(logp_action)
@@ -104,6 +108,7 @@ class Rollout:
         self.next_state_lst.append(next_state)
 
     def tensor(self):
+        '''返回放入s,a,log_a,r,done,next_s的list'''
         bs = torch.as_tensor(self.state_lst).float()
         ba = torch.as_tensor(self.action_lst).float()
         blogp_a = self.logp_action_lst
@@ -144,11 +149,12 @@ def train(args, env, agent: A2C):
     info = INFO()
 
     rollout = Rollout()
-    state, _ = env.reset()
+    state= env.reset()
     for step in range(args.max_steps):
-        action, logp_action = agent.get_action(torch.tensor(state).float())
-        next_state, reward, terminated, truncated, _ = env.step(action.item())
-        done = terminated or truncated
+        env.render()
+        action, logp_action = agent.get_action(torch.tensor([state]).float())
+        next_state, reward, terminated, _ = env.step(action.item())
+        done = terminated
         info.put(done, reward)
 
         rollout.put(
@@ -160,7 +166,7 @@ def train(args, env, agent: A2C):
             next_state,
         )
         state = next_state
-
+        #怎么感觉是离线算法，先看下更新和使用的是否为同一个模型
         if done is True:
             # 模型训练。
             bs, ba, blogp_a, br, bd, bns = rollout.tensor()
@@ -187,7 +193,7 @@ def train(args, env, agent: A2C):
             print(f"step={step}, reward={episode_reward:.0f}, length={episode_length}, max_reward={info.max_episode_reward}, value_loss={value_loss:.1e}")
 
             # 重置环境。
-            state, _ = env.reset()
+            state= env.reset()
             rollout = Rollout()
 
             # 保存模型。
@@ -198,6 +204,8 @@ def train(args, env, agent: A2C):
         if step % 10000 == 0:
             plt.plot(info.log["value_loss"], label="value loss")
             plt.legend()
+            if os.path.exists(args.output_dir) is False:
+                os.mkdir(args.output_dir)
             plt.savefig(f"{args.output_dir}/value_loss.png", bbox_inches="tight")
             plt.close()
 
@@ -213,27 +221,27 @@ def eval(args, env, agent):
 
     episode_length = 0
     episode_reward = 0
-    state, _ = env.reset()
+    state = env.reset()
     for i in range(5000):
         episode_length += 1
-        action, _ = agent.get_action(torch.from_numpy(state))
-        next_state, reward, terminated, truncated, info = env.step(action.item())
-        done = terminated or truncated
+        action, _ = agent.get_action(torch.tensor([state]).float())
+        next_state, reward, terminated, info = env.step(action.item())
+        done = terminated
         episode_reward += reward
 
         state = next_state
         if done is True:
             print(f"episode reward={episode_reward}, length={episode_length}")
-            state, _ = env.reset()
+            state = env.reset()
             episode_length = 0
             episode_reward = 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env", default="CartPole-v1", type=str, help="Environment name.")
-    parser.add_argument("--dim_state", default=4, type=int, help="Dimension of state.")
-    parser.add_argument("--num_action", default=2, type=int, help="Number of action.")
+    parser.add_argument("--env", default="FrozenLake-v1", type=str, help="Environment name.")
+    parser.add_argument("--dim_state", default=1, type=int, help="Dimension of state.")
+    parser.add_argument("--num_action", default=4, type=int, help="Number of action.")
     parser.add_argument("--output_dir", default="output", type=str, help="Output directory.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 
@@ -243,7 +251,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=32, type=int, help="Batch size.")
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
 
-    parser.add_argument("--do_train", action="store_true", help="Train policy.")
+    parser.add_argument("--do_train", default=True,action="store_true", help="Train policy.")
     parser.add_argument("--do_eval", action="store_true", help="Evaluate policy.")
     args = parser.parse_args()
 
