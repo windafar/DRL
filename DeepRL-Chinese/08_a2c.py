@@ -147,11 +147,12 @@ def train(args, env, agent: A2C):
     info = INFO()
 
     rollout = Rollout()
-    state = env.reset()
+    state,_ = env.reset()
+    done_step_num=0
     for step in range(args.max_steps):
         action, logp_action = agent.get_action(torch.tensor(state).float())
-        next_state, reward, terminated, _ = env.step(action.item())
-        done = terminated
+        next_state, reward, terminated, truncated, _ = env.step(action.item())
+        done = terminated or truncated
         info.put(done, reward)
 
         rollout.put(
@@ -165,6 +166,7 @@ def train(args, env, agent: A2C):
         state = next_state
 
         if done is True:
+            done_step_num+=1
             # 模型训练。
             bs, ba, blogp_a, br, bd, bns = rollout.tensor()
 
@@ -188,9 +190,11 @@ def train(args, env, agent: A2C):
             episode_length = info.log["episode_length"][-1]
             value_loss = info.log["value_loss"][-1]
             print(f"step={step}, reward={episode_reward:.0f}, length={episode_length}, max_reward={info.max_episode_reward}, value_loss={value_loss:.1e}")
-
+            writer.add_scalars("score",{"train":episode_reward},done_step_num)
+            writer.add_scalars("value_loss",{"train":value_loss},done_step_num)
+            writer.add_scalars("policy_loss",{"train":policy_loss},done_step_num)
             # 重置环境。
-            state= env.reset()
+            state,_= env.reset()
             rollout = Rollout()
 
             # 保存模型。
@@ -201,6 +205,8 @@ def train(args, env, agent: A2C):
         if step % 10000 == 0:
             plt.plot(info.log["value_loss"], label="value loss")
             plt.legend()
+            if not os.path.exists(args.output_dir):
+                os.makedirs(args.output_dir)
             plt.savefig(f"{args.output_dir}/value_loss.png", bbox_inches="tight")
             plt.close()
 
@@ -242,14 +248,15 @@ if __name__ == "__main__":
 
     parser.add_argument("--max_steps", default=100_000, type=int, help="Maximum steps for interaction.")
     parser.add_argument("--discount", default=0.99, type=float, help="Discount coefficient.")
-    parser.add_argument("--lr", default=1e-3, type=float, help="Learning rate.")
+    parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
     parser.add_argument("--batch_size", default=32, type=int, help="Batch size.")
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
 
     parser.add_argument("--do_train",default=True, action="store_true", help="Train policy.")
     parser.add_argument("--do_eval", action="store_true", help="Evaluate policy.")
     args = parser.parse_args()
-
+    from tensorboardX import SummaryWriter
+    writer=SummaryWriter()
     env = gym.make(args.env)
     agent = A2C(args)
 
