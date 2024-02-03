@@ -12,32 +12,94 @@ from torch.distributions import Categorical
 
 
 class ValueNet(nn.Module):
-    def __init__(self, dim_state,dim_hiden=512):
+    def __init__(self, dim_state,dim_hiden=256):
         super().__init__()
         self.fc1 = nn.Linear(dim_state, dim_hiden)
         self.fc2 = nn.Linear(dim_hiden, int(dim_hiden/2))
         self.fc3 = nn.Linear(int(dim_hiden/2), 1)
+        self.neure_l1_av=torch.zeros((1,256))
+        self.neure_l2_av=torch.zeros((1,128))
+        self.neure_l3_av=torch.zeros((1,1))
+        self.is_reset_die_neure=False
+        self.count_=0
 
-    def forward(self, state):
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
+    def forward(self, state):#      bs*1=>
+        l1_a = F.relu(self.fc1(state))#1*256=bs*256=>
+        l2_a = F.relu(self.fc2(l1_a))#256*128=bs*128=>
+        x = self.fc3(l2_a)          #128*1=bs*1                                 
+        #-----------重置死掉的神经元---------------------------
+        with torch.no_grad():
+            self.count_+=1
+            self.neure_l1_av+=torch.abs(l1_a).mean(dim=0)
+            self.neure_l2_av+=torch.abs(l2_a).mean(dim=0)
+            self.neure_l3_av+=torch.abs(x).mean(dim=0)
+            if self.is_reset_die_neure:
+                self.ReInitNerunk(self.neure_l1_av/self.count_,self.fc1.weight,self.fc2.weight)
+                self.ReInitNerunk(self.neure_l2_av/self.count_,self.fc2.weight,self.fc3.weight)
+                self.ReInitNerunk(self.neure_l3_av/self.count_,self.fc3.weight,None)
+                self.neure_l1_av=torch.zeros((1,256))
+                self.neure_l2_av=torch.zeros((1,128))
+                self.neure_l3_av=torch.zeros((1,1))
+                self.is_reset_die_neure=False
+                self.count_=0
+        #-------------------------------------
         return x
+    def ReInitNerunk(self,l1_a,l1_weight,lnext_weight):
+        l1_a_w=l1_a/l1_a.mean()#计算每个神经元输出占比
+        condition_l1_a=l1_a_w>0.001#神经元输出比重小于0.001，判定为死掉,torch.randint(1,100,dtype=float)/100
+        #直接修改data可行吗？
+        #测试替换是否如预期
+        l1_weight.data=torch.where(condition_l1_a.T,l1_weight.data,torch.rand_like(l1_weight.data))#重置输入权重【也可以使用nonzero实现】
+        if(lnext_weight==None):
+            return
+        #测试多替换是否可行
+        lnext_weight.data=torch.where(condition_l1_a,lnext_weight.data,0)
 
 
 class PolicyNet(nn.Module):
-    def __init__(self, dim_state, num_action,dim_hiden=512):
+    def __init__(self, dim_state, num_action,dim_hiden=256):
         super().__init__()
         self.fc1 = nn.Linear(dim_state, dim_hiden)
         self.fc2 = nn.Linear(dim_hiden, int(dim_hiden/2))
         self.fc3 = nn.Linear(int(dim_hiden/2), num_action)
-
+        self.neure_l1_av=torch.zeros((1,256))
+        self.neure_l2_av=torch.zeros((1,128))
+        self.neure_l3_av=torch.zeros((1,4))
+        self.is_reset_die_neure=False
+        self.count_=0
     def forward(self, state):
-        x = F.relu(self.fc1(state))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        prob = F.softmax(x, dim=-1)
+        l1_a = F.relu(self.fc1(state))
+        l2_a = F.relu(self.fc2(l1_a))
+        l3 = self.fc3(l2_a)
+        prob = F.softmax(l3, dim=-1)
+                #-----------重置死掉的神经元---------------------------
+        with torch.no_grad():
+            self.count_+=1
+            self.neure_l1_av+=torch.abs(l1_a).mean(dim=0)
+            self.neure_l2_av+=torch.abs(l2_a).mean(dim=0)
+            self.neure_l3_av+=torch.abs(prob).mean(dim=0)
+            if self.is_reset_die_neure:
+                self.ReInitNerunk(self.neure_l1_av/self.count_,self.fc1.weight,self.fc2.weight)
+                self.ReInitNerunk(self.neure_l2_av/self.count_,self.fc2.weight,self.fc3.weight)
+                self.ReInitNerunk(self.neure_l3_av/self.count_,self.fc3.weight,None)
+                self.neure_l1_av=torch.zeros((1,256))
+                self.neure_l2_av=torch.zeros((1,128))
+                self.neure_l3_av=torch.zeros((1,4))
+                self.is_reset_die_neure=False
+                self.count_=0
+        #-------------------------------------
+
         return prob
+    def ReInitNerunk(self,l1_a,l1_weight,lnext_weight):
+        l1_a_w=l1_a/l1_a.mean()#计算每个神经元输出占比
+        condition_l1_a=l1_a_w>0.001#神经元输出比重小于0.001，判定为死掉,torch.randint(1,100,dtype=float)/100
+        #直接修改data可行吗？
+        #测试替换是否如预期
+        l1_weight.data=torch.where(condition_l1_a.T,l1_weight.data,torch.rand_like(l1_weight.data))#重置输入权重【也可以使用nonzero实现】
+        if(lnext_weight==None):
+            return
+        #测试多替换是否可行
+        lnext_weight.data=torch.where(condition_l1_a,lnext_weight.data,0)
 
 
 class A2C:
@@ -70,6 +132,8 @@ class A2C:
     def compute_policy_loss(self, bs, blogp_a, br, bd, bns):
         # 目标价值。
         with torch.no_grad():
+            #gs:即模拟s_value的s_next_value
+            #需要注意的是这里只从s+1算了s,而不是对每个s+n算到s0
             target_value = br + self.args.discount  * self.V_target(bns.unsqueeze(-1)).squeeze()
 
         # 计算policy loss。
@@ -81,7 +145,7 @@ class A2C:
         policy_loss = policy_loss.mean()
         return policy_loss
 
-    def soft_update(self, tau=0.01):
+    def soft_update(self, tau=0.2):
         def soft_update_(target, source, tau_=0.01):
             for target_param, param in zip(target.parameters(), source.parameters()):
                 target_param.data.copy_(target_param.data * (1.0 - tau_) + param.data * tau_)
@@ -144,24 +208,23 @@ class INFO:
 
 
 def train(args, env, agent: A2C):
-    V_optimizer = torch.optim.Adam(agent.V.parameters(), lr=3e-3)
-    pi_optimizer = torch.optim.Adam(agent.pi.parameters(), lr=3e-3)
+    V_optimizer = torch.optim.Adam(agent.V.parameters(), lr=1e-3)
+    pi_optimizer = torch.optim.Adam(agent.pi.parameters(), lr=1e-3)
     info = INFO()
 
     rollout = Rollout()
     state= env.reset()
+    false_num=0
+    train_num=0
     for step in range(args.max_steps):
         #env.render()
         action, logp_action = agent.get_action(torch.tensor([state]).float())
         next_state, reward, terminated, _ = env.step(action.item())
-        done = terminated
-        if not done:
-            reward=reward-1
-        if  done and reward>0:
-            reward=reward+5
-        
-        info.put(done, reward)
-
+        done = terminated and (reward!=0.0)
+        if done:
+            reward=5
+        else:
+             reward-=1
         rollout.put(
             state,
             action,
@@ -171,8 +234,22 @@ def train(args, env, agent: A2C):
             next_state,
         )
         state = next_state
+        if(not done):
+            false_num+=1
+            if false_num>50:
+                false_num=0
+                #done=True#方案2，如果长度超过100则按照截断处理
+                #重置环境。
+                state= env.reset()
+                rollout = Rollout()
+                #不使用infog.put(done=ture,r)，直接归零episode_length和episode_reward
+                #当做无事发生
+                info.episode_length = 0
+                info.episode_reward = 0
+        info.put(done, reward)
         #怎么感觉是离线算法，先看下更新和使用的是否为同一个模型
         if done is True:
+            train_num+=1
             # 模型训练。
             bs, ba, blogp_a, br, bd, bns = rollout.tensor()
 
@@ -200,12 +277,16 @@ def train(args, env, agent: A2C):
             # 重置环境。
             state= env.reset()
             rollout = Rollout()
-
+            false_num=0
+            if(train_num>500):
+                agent.pi.is_reset_die_neure=True
+                agent.V.is_reset_die_neure=True
+                train_num=0
             # 保存模型。
             if episode_reward == info.max_episode_reward:
                 save_path = os.path.join(args.output_dir, "model.bin")
                 torch.save(agent.pi.state_dict(), save_path)
-
+    
         if step % 10000 == 0:
             plt.plot(info.log["value_loss"], label="value loss")
             plt.legend()
@@ -218,6 +299,13 @@ def train(args, env, agent: A2C):
             plt.savefig(f"{args.output_dir}/episode_reward.png", bbox_inches="tight")
             plt.close()
 
+            plt.plot(info.log["policy_loss"])
+            plt.savefig(f"{args.output_dir}/policy_loss.png", bbox_inches="tight")
+            plt.close()
+
+            plt.plot(info.log["episode_length"])
+            plt.savefig(f"{args.output_dir}/episode_length.png", bbox_inches="tight")
+            plt.close()
 
 def eval(args, env, agent):
     agent = A2C(args)
@@ -251,14 +339,14 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", default="output", type=str, help="Output directory.")
     parser.add_argument("--seed", default=42, type=int, help="Random seed.")
 
-    parser.add_argument("--max_steps", default=100_000, type=int, help="Maximum steps for interaction.")
+    parser.add_argument("--max_steps", default=100_000_00, type=int, help="Maximum steps for interaction.")
     parser.add_argument("--discount", default=0.99, type=float, help="Discount coefficient.")
     parser.add_argument("--lr", default=1e-3, type=float, help="Learning rate.")
     parser.add_argument("--batch_size", default=32, type=int, help="Batch size.")
     parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
 
-    parser.add_argument("--do_train",action="store_true", help="Train policy.")
-    parser.add_argument("--do_eval", default=True, action="store_true", help="Evaluate policy.")
+    parser.add_argument("--do_train",default=True,action="store_true", help="Train policy.")
+    parser.add_argument("--do_eval",  action="store_true", help="Evaluate policy.")
     args = parser.parse_args()
 
     env = gym.make(args.env)
@@ -269,3 +357,7 @@ if __name__ == "__main__":
 
     if args.do_eval:
         eval(args, env, agent)
+# 1，迁移到冰湖环境测试可行否
+# 2，发现奖励太过稀疏，于是只使用done的数据训练，发现loss一直在增加
+# 3，取消只是用done的数据，但限制最大长度为30#--------------ing
+# 4，如果不行就从2开始分析，加入死神经元激活#
