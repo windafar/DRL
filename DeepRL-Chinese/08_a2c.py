@@ -146,7 +146,7 @@ class A2C:
         policy_loss = policy_loss.mean()
         return policy_loss
 
-    def soft_update(self, tau=0.2):
+    def soft_update(self, tau=0.1):
         def soft_update_(target, source, tau_=0.01):
             for target_param, param in zip(target.parameters(), source.parameters()):
                 target_param.data.copy_(target_param.data * (1.0 - tau_) + param.data * tau_)
@@ -278,10 +278,10 @@ def train(args, env, agent: A2C):
             writer.add_scalars("loss_value",{"train":value_loss},episode_length)
             writer.add_scalars("loss_policy",{"train":policy_loss},episode_length)
             # 重置环境。
-            state,_= env.reset()
+            state= env.reset()
             rollout = Rollout()
             false_num=0
-            if(train_num>500):
+            if(train_num>200):
                 agent.pi.is_reset_die_neure=True
                 agent.V.is_reset_die_neure=True
                 train_num=0
