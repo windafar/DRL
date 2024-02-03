@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
+from tensorboardX import SummaryWriter
 
 
 class ValueNet(nn.Module):
@@ -273,9 +274,11 @@ def train(args, env, agent: A2C):
             episode_length = info.log["episode_length"][-1]
             value_loss = info.log["value_loss"][-1]
             print(f"step={step}, reward={episode_reward:.0f}, length={episode_length}, max_reward={info.max_episode_reward}, value_loss={value_loss:.1e}")
-
+            writer.add_scalars("reward",{"train":episode_reward},episode_length)
+            writer.add_scalars("loss_value",{"train":value_loss},episode_length)
+            writer.add_scalars("loss_policy",{"train":policy_loss},episode_length)
             # 重置环境。
-            state= env.reset()
+            state,_= env.reset()
             rollout = Rollout()
             false_num=0
             if(train_num>500):
@@ -348,7 +351,7 @@ if __name__ == "__main__":
     parser.add_argument("--do_train",default=True,action="store_true", help="Train policy.")
     parser.add_argument("--do_eval",  action="store_true", help="Evaluate policy.")
     args = parser.parse_args()
-
+    writer=SummaryWriter()
     env = gym.make(args.env)
     agent = A2C(args)
 
